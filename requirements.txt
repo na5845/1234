@@ -1,0 +1,6 @@
+openai-whisper==20230918
+gradio==4.19.2
+yt-dlp==2024.1.2
+numpy==1.24.3
+torch>=2.0.0
+tqdm
