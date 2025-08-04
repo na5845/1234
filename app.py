@@ -100,7 +100,6 @@ with gr.Blocks(title="תמלול Whisper", theme=gr.themes.Soft()) as app:
     with gr.Row():
         with gr.Column(scale=1):
             audio_input = gr.Audio(
-                sources=["upload"],
                 type="filepath",
                 label="📁 קובץ אודיו/וידאו"
             )
