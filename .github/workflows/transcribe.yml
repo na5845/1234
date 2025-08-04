@@ -1,0 +1,106 @@
+name: 🎙️ תמלול קובץ אודיו
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'קישור לקובץ אודיו/וידאו'
+        required: true
+        type: string
+      model_size:
+        description: 'גודל מודל'
+        required: true
+        default: 'base'
+        type: choice
+        options:
+          - tiny    # מהיר, פחות מדויק
+          - base    # מאוזן
+          - small   # מדויק
+          - medium  # מדויק מאוד
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: 📥 Checkout קוד
+      uses: actions/checkout@v4
+    
+    - name: 🐍 התקנת Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: 📦 התקנת תלויות
+      run: |
+        pip install --upgrade pip
+        pip install openai-whisper yt-dlp
+    
+    - name: 📥 הורדת קובץ
+      run: |
+        echo "מוריד קובץ מ: ${{ inputs.file_url }}"
+        
+        # בדוק אם זה YouTube
+        if [[ "${{ inputs.file_url }}" =~ youtube\.com|youtu\.be ]]; then
+          echo "🎥 מזוהה קישור YouTube"
+          yt-dlp -x --audio-format mp3 -o "input.mp3" "${{ inputs.file_url }}"
+        else
+          echo "📁 מוריד קובץ רגיל"
+          wget -O input.mp3 "${{ inputs.file_url }}"
+        fi
+        
+        # בדוק גודל קובץ
+        ls -lh input.mp3
+    
+    - name: 🎙️ תמלול
+      run: |
+        python << 'EOF'
+        import whisper
+        import json
+        from datetime import datetime
+        
+        print(f"🔄 טוען מודל {model_size}...")
+        model = whisper.load_model("${{ inputs.model_size }}")
+        
+        print("🎙️ מתחיל תמלול...")
+        result = model.transcribe("input.mp3", language="he", verbose=True)
+        
+        # שמור טקסט
+        with open("transcription.txt", "w", encoding="utf-8") as f:
+            f.write(result["text"])
+        
+        # שמור JSON עם מטא-דאטה
+        metadata = {
+            "date": datetime.now().isoformat(),
+            "model": "${{ inputs.model_size }}",
+            "language": "Hebrew",
+            "duration": result.get("duration", 0),
+            "text": result["text"],
+            "segments": result["segments"]
+        }
+        
+        with open("transcription.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+        
+        # צור כתוביות SRT
+        with open("subtitles.srt", "w", encoding="utf-8") as f:
+            for i, segment in enumerate(result["segments"], 1):
+                start = f"{int(segment['start']//3600):02d}:{int(segment['start']%3600//60):02d}:{segment['start']%60:06.3f}".replace(".", ",")
+                end = f"{int(segment['end']//3600):02d}:{int(segment['end']%3600//60):02d}:{segment['end']%60:06.3f}".replace(".", ",")
+                f.write(f"{i}\n{start} --> {end}\n{segment['text'].strip()}\n\n")
+        
+        print("✅ התמלול הושלם בהצלחה!")
+        print(f"📊 אורך: {result.get('duration', 0):.1f} שניות")
+        print(f"📝 מילים: {len(result['text'].split())}")
+        EOF
+    
+    - name: 📤 העלאת תוצאות
+      uses: actions/upload-artifact@v3
+      with:
+        name: תוצאות-תמלול-${{ github.run_number }}
+        path: |
+          transcription.txt
+          transcription.json
+          subtitles.srt
