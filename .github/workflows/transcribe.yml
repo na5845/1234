@@ -44,7 +44,7 @@ jobs:
         pip install --upgrade pip
         pip install openai-whisper yt-dlp
     
-    - name: 📥 הורדת קובץ
+    - name: 📥 הורדת קובץ משופרת
       run: |
         echo "מוריד קובץ מ: ${{ inputs.file_url }}"
         
@@ -54,11 +54,50 @@ jobs:
           yt-dlp -x --audio-format mp3 -o "input.mp3" "${{ inputs.file_url }}"
         else
           echo "📁 מוריד קובץ רגיל"
-          wget -O input.mp3 "${{ inputs.file_url }}"
+          
+          # נסה עם curl עם headers
+          curl -L \
+               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+               -H "Accept: audio/*,video/*,*/*" \
+               --max-redirs 10 \
+               --connect-timeout 30 \
+               --max-time 300 \
+               -o "input.mp3" \
+               "${{ inputs.file_url }}"
+          
+          # בדוק אם ההורדה הצליחה
+          if [ ! -f "input.mp3" ]; then
+            echo "❌ ההורדה נכשלה!"
+            exit 1
+          fi
         fi
         
         # בדוק גודל קובץ
+        echo "📊 פרטי הקובץ:"
         ls -lh input.mp3
+        
+        # בדוק שהקובץ לא ריק
+        FILE_SIZE=$(stat -c%s "input.mp3" 2>/dev/null || stat -f%z "input.mp3" 2>/dev/null)
+        if [ "$FILE_SIZE" -eq 0 ]; then
+          echo "❌ הקובץ ריק!"
+          exit 1
+        fi
+        
+        # בדוק את סוג הקובץ
+        echo "🔍 בודק סוג קובץ:"
+        file input.mp3
+        
+        # נסה לבדוק עם ffprobe
+        echo "🎵 בודק עם ffprobe:"
+        ffprobe -v error -show_format -show_streams input.mp3 || true
+        
+        # אם הקובץ לא MP3, נסה להמיר
+        if ! ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 input.mp3 | grep -q "mp3"; then
+          echo "⚙️ ממיר לפורמט MP3..."
+          mv input.mp3 temp_input
+          ffmpeg -i temp_input -acodec mp3 -ab 192k input.mp3
+          rm temp_input
+        fi
     
     - name: 🎙️ תמלול
       env:
@@ -75,7 +114,14 @@ jobs:
         model = whisper.load_model(model_size)
         
         print("🎙️ מתחיל תמלול...")
-        result = model.transcribe("input.mp3", language="he", verbose=True)
+        
+        try:
+            result = model.transcribe("input.mp3", language="he", verbose=True)
+        except Exception as e:
+            print(f"❌ שגיאה בתמלול: {e}")
+            # נסה בלי verbose
+            print("🔄 מנסה שוב בלי verbose mode...")
+            result = model.transcribe("input.mp3", language="he", verbose=False)
         
         # שמור טקסט
         with open("transcription.txt", "w", encoding="utf-8") as f:
@@ -104,6 +150,12 @@ jobs:
         print("✅ התמלול הושלם בהצלחה!")
         print(f"📊 אורך: {result.get('duration', 0):.1f} שניות")
         print(f"📝 מילים: {len(result['text'].split())}")
+        
+        # הצג תצוגה מקדימה
+        print("\n📝 תצוגה מקדימה של התמלול:")
+        print("-" * 50)
+        preview = result["text"][:500] + "..." if len(result["text"]) > 500 else result["text"]
+        print(preview)
         EOF
     
     - name: 📤 העלאת תוצאות
