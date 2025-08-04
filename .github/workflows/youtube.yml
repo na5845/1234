@@ -1,0 +1,236 @@
+name: 🎥 תמלול סרטון YouTube
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'קישור YouTube'
+        required: true
+        type: string
+        placeholder: 'https://www.youtube.com/watch?v=...'
+      model_size:
+        description: 'גודל מודל Whisper'
+        required: true
+        default: 'base'
+        type: choice
+        options:
+          - tiny
+          - base
+          - small
+          - medium
+      quality:
+        description: 'איכות אודיו'
+        required: true
+        default: 'best'
+        type: choice
+        options:
+          - best
+          - good
+          - worst
+
+jobs:
+  transcribe-youtube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: 📦 Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install openai-whisper yt-dlp
+        
+    - name: 📊 Get video info
+      id: video_info
+      run: |
+        echo "🔍 מקבל מידע על הסרטון..."
+        
+        # קבל מידע בלבד (בלי להוריד)
+        yt-dlp --print "%(title)s" "${{ inputs.youtube_url }}" > title.txt
+        yt-dlp --print "%(duration)s" "${{ inputs.youtube_url }}" > duration.txt
+        yt-dlp --print "%(uploader)s" "${{ inputs.youtube_url }}" > uploader.txt
+        
+        # שמור למשתנים
+        echo "title=$(cat title.txt)" >> $GITHUB_OUTPUT
+        echo "duration=$(cat duration.txt)" >> $GITHUB_OUTPUT
+        echo "uploader=$(cat uploader.txt)" >> $GITHUB_OUTPUT
+        
+        # הצג מידע
+        echo "📹 כותרת: $(cat title.txt)"
+        echo "⏱️ משך: $(cat duration.txt) שניות"
+        echo "👤 מעלה: $(cat uploader.txt)"
+        
+    - name: 🎵 Download audio
+      run: |
+        echo "📥 מוריד אודיו מ-YouTube..."
+        
+        # הגדר איכות
+        if [ "${{ inputs.quality }}" == "best" ]; then
+          AUDIO_QUALITY="0"
+        elif [ "${{ inputs.quality }}" == "good" ]; then
+          AUDIO_QUALITY="5"
+        else
+          AUDIO_QUALITY="9"
+        fi
+        
+        # הורד רק אודיו
+        yt-dlp \
+          -f "bestaudio/best" \
+          -x \
+          --audio-format mp3 \
+          --audio-quality $AUDIO_QUALITY \
+          -o "audio.%(ext)s" \
+          "${{ inputs.youtube_url }}"
+          
+        # בדוק גודל
+        ls -lh audio.mp3
+        
+    - name: 🎙️ Transcribe
+      run: |
+        python << 'EOF'
+        import whisper
+        import json
+        import os
+        from datetime import datetime, timedelta
+        
+        # טען מודל
+        model_size = "${{ inputs.model_size }}"
+        print(f"🔄 טוען מודל {model_size}...")
+        model = whisper.load_model(model_size)
+        
+        # תמלל
+        print("🎙️ מתחיל תמלול...")
+        result = model.transcribe("audio.mp3", language="he", verbose=True)
+        
+        # מידע על הסרטון
+        video_info = {
+            "url": "${{ inputs.youtube_url }}",
+            "title": "${{ steps.video_info.outputs.title }}",
+            "duration": int("${{ steps.video_info.outputs.duration }}"),
+            "uploader": "${{ steps.video_info.outputs.uploader }}",
+            "transcribed_at": datetime.now().isoformat()
+        }
+        
+        # שמור טקסט מלא
+        with open("transcription.txt", "w", encoding="utf-8") as f:
+            f.write(f"תמלול: {video_info['title']}\n")
+            f.write(f"מאת: {video_info['uploader']}\n")
+            f.write(f"משך: {timedelta(seconds=video_info['duration'])}\n")
+            f.write("="*50 + "\n\n")
+            f.write(result["text"])
+        
+        # שמור JSON מפורט
+        full_result = {
+            "video_info": video_info,
+            "model": model_size,
+            "text": result["text"],
+            "segments": result["segments"]
+        }
+        
+        with open("transcription.json", "w", encoding="utf-8") as f:
+            json.dump(full_result, f, ensure_ascii=False, indent=2)
+        
+        # צור כתוביות YouTube (פורמט מיוחד)
+        with open("youtube_captions.sbv", "w", encoding="utf-8") as f:
+            for segment in result["segments"]:
+                start = timedelta(seconds=segment["start"])
+                end = timedelta(seconds=segment["end"])
+                
+                # פורמט SBV של YouTube
+                start_str = f"{int(start.total_seconds()//3600)}:{int(start.total_seconds()%3600//60):02d}:{start.total_seconds()%60:06.3f}"
+                end_str = f"{int(end.total_seconds()//3600)}:{int(end.total_seconds()%3600//60):02d}:{end.total_seconds()%60:06.3f}"
+                
+                f.write(f"{start_str},{end_str}\n")
+                f.write(f"{segment['text'].strip()}\n\n")
+        
+        # צור קובץ לתיאור YouTube
+        with open("youtube_description.txt", "w", encoding="utf-8") as f:
+            f.write("⏱️ חותמות זמן:\n\n")
+            
+            # חלק לפרקים (כל 5 דקות או לפי הפסקות)
+            chapters = []
+            current_chapter_start = 0
+            current_texts = []
+            
+            for segment in result["segments"]:
+                current_texts.append(segment["text"])
+                
+                # אם עברו 5 דקות או יש הפסקה ארוכה
+                if segment["end"] - current_chapter_start > 300 or \
+                   (len(chapters) > 0 and segment["start"] - result["segments"][result["segments"].index(segment)-1]["end"] > 5):
+                    
+                    # סכם את הפרק
+                    chapter_text = " ".join(current_texts[:10])  # 10 מילים ראשונות
+                    if len(chapter_text) > 50:
+                        chapter_text = chapter_text[:50] + "..."
+                    
+                    timestamp = timedelta(seconds=current_chapter_start)
+                    time_str = f"{int(timestamp.total_seconds()//60):02d}:{int(timestamp.total_seconds()%60):02d}"
+                    
+                    f.write(f"{time_str} - {chapter_text}\n")
+                    
+                    current_chapter_start = segment["start"]
+                    current_texts = []
+        
+        print("\n✅ התמלול הושלם!")
+        print(f"📝 מילים: {len(result['text'].split())}")
+        print(f"🎬 פלחים: {len(result['segments'])}")
+        
+        EOF
+        
+    - name: 📤 Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: youtube-transcription-${{ github.run_number }}
+        path: |
+          transcription.txt
+          transcription.json
+          youtube_captions.sbv
+          youtube_description.txt
+          
+    - name: 💬 Create summary comment
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // קרא את התמלול
+          const transcription = fs.readFileSync('transcription.txt', 'utf8');
+          const lines = transcription.split('\n');
+          
+          // צור תקציר
+          const preview = lines.slice(4, 10).join('\n');
+          
+          // צור הודעה
+          const body = `## 🎥 תמלול הושלם!
+          
+          **סרטון:** ${{ steps.video_info.outputs.title }}
+          **משך:** ${Math.floor(${{ steps.video_info.outputs.duration }}/60)} דקות
+          **מודל:** ${{ inputs.model_size }}
+          
+          ### 📝 תצוגה מקדימה:
+          \`\`\`
+          ${preview}...
+          \`\`\`
+          
+          ### 📥 הורדות:
+          - לך ל-[Artifacts](../actions/runs/${{ github.run_id }}) להורדת הקבצים המלאים
+          - כולל: טקסט מלא, כתוביות, חותמות זמן
+          `;
+          
+          // אם זה pull request, הוסף תגובה
+          if (context.payload.pull_request) {
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+          }
