@@ -1,0 +1,148 @@
+name: 📂 תמלול קובץ מהפרויקט
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_name:
+        description: 'שם הקובץ בתיקיית audio (למשל: myfile.mp3)'
+        required: true
+        type: string
+      model_size:
+        description: 'גודל מודל'
+        required: true
+        default: 'base'
+        type: choice
+        options:
+          - tiny
+          - base
+          - small
+          - medium
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true  # אם משתמשים ב-Git LFS לקבצים גדולים
+    
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: 🎵 Install FFmpeg
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    - name: 📦 Install Whisper
+      run: |
+        pip install --upgrade pip
+        pip install openai-whisper
+    
+    - name: 🔍 בדיקת קובץ
+      run: |
+        FILE_PATH="audio/${{ inputs.file_name }}"
+        
+        echo "🔍 מחפש את: $FILE_PATH"
+        
+        if [ ! -f "$FILE_PATH" ]; then
+          echo "❌ הקובץ לא נמצא!"
+          echo ""
+          echo "📁 קבצים זמינים בתיקיית audio:"
+          ls -la audio/ 2>/dev/null || echo "התיקייה audio לא קיימת"
+          echo ""
+          echo "💡 ודא ש:"
+          echo "1. הקובץ נמצא בתיקיית audio/"
+          echo "2. השם נכתב נכון (כולל סיומת)"
+          echo "3. עשית Commit אחרי העלאת הקובץ"
+          exit 1
+        fi
+        
+        echo "✅ הקובץ נמצא!"
+        echo "📊 פרטי הקובץ:"
+        ls -lh "$FILE_PATH"
+        file "$FILE_PATH"
+        
+        # בדוק עם ffprobe
+        echo ""
+        echo "🎵 מידע על האודיו:"
+        ffprobe -v error -show_format -show_streams "$FILE_PATH" 2>&1 | head -20
+    
+    - name: 🎙️ תמלול
+      env:
+        FILE_NAME: ${{ inputs.file_name }}
+        MODEL_SIZE: ${{ inputs.model_size }}
+      run: |
+        python << 'EOF'
+        import whisper
+        import json
+        import os
+        from datetime import datetime
+        
+        # הגדרות
+        file_path = f"audio/{os.environ['FILE_NAME']}"
+        model_size = os.environ.get('MODEL_SIZE', 'base')
+        
+        print(f"🔄 טוען מודל {model_size}...")
+        model = whisper.load_model(model_size)
+        
+        print(f"🎙️ מתמלל את {file_path}...")
+        
+        # תמלל
+        result = model.transcribe(file_path, language="he", verbose=False)
+        
+        # שם בסיס לקבצי פלט
+        base_name = os.path.splitext(os.environ['FILE_NAME'])[0]
+        
+        # שמור טקסט
+        with open(f"{base_name}_transcription.txt", "w", encoding="utf-8") as f:
+            f.write(f"תמלול של: {file_path}\n")
+            f.write(f"תאריך: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+            f.write(f"מודל: {model_size}\n")
+            f.write("="*50 + "\n\n")
+            f.write(result["text"])
+        
+        # שמור JSON
+        metadata = {
+            "file": file_path,
+            "date": datetime.now().isoformat(),
+            "model": model_size,
+            "language": "Hebrew",
+            "duration": result.get("duration", 0),
+            "text": result["text"],
+            "segments": result["segments"]
+        }
+        
+        with open(f"{base_name}_data.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+        
+        # צור כתוביות SRT
+        with open(f"{base_name}_subtitles.srt", "w", encoding="utf-8") as f:
+            for i, segment in enumerate(result["segments"], 1):
+                start = f"{int(segment['start']//3600):02d}:{int(segment['start']%3600//60):02d}:{segment['start']%60:06.3f}".replace(".", ",")
+                end = f"{int(segment['end']//3600):02d}:{int(segment['end']%3600//60):02d}:{segment['end']%60:06.3f}".replace(".", ",")
+                f.write(f"{i}\n{start} --> {end}\n{segment['text'].strip()}\n\n")
+        
+        print("\n✅ התמלול הושלם בהצלחה!")
+        print(f"📊 משך: {result.get('duration', 0):.1f} שניות")
+        print(f"📝 מילים: {len(result['text'].split())}")
+        
+        # תצוגה מקדימה
+        print("\n📝 תצוגה מקדימה:")
+        print("-" * 50)
+        preview = result["text"][:300] + "..." if len(result["text"]) > 300 else result["text"]
+        print(preview)
+        EOF
+    
+    - name: 📤 העלאת תוצאות
+      uses: actions/upload-artifact@v4
+      with:
+        name: תמלול-${{ inputs.file_name }}-${{ github.run_number }}
+        path: |
+          *_transcription.txt
+          *_subtitles.srt
+          *_data.json
