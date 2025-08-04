@@ -55,14 +55,18 @@ jobs:
         ls -lh input.mp3
     
     - name: 🎙️ תמלול
+      env:
+        MODEL_SIZE: ${{ inputs.model_size }}
       run: |
         python << 'EOF'
         import whisper
         import json
+        import os
         from datetime import datetime
         
+        model_size = os.environ.get('MODEL_SIZE', 'base')
         print(f"🔄 טוען מודל {model_size}...")
-        model = whisper.load_model("${{ inputs.model_size }}")
+        model = whisper.load_model(model_size)
         
         print("🎙️ מתחיל תמלול...")
         result = model.transcribe("input.mp3", language="he", verbose=True)
@@ -74,7 +78,7 @@ jobs:
         # שמור JSON עם מטא-דאטה
         metadata = {
             "date": datetime.now().isoformat(),
-            "model": "${{ inputs.model_size }}",
+            "model": model_size,
             "language": "Hebrew",
             "duration": result.get("duration", 0),
             "text": result["text"],
