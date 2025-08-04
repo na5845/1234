@@ -1,138 +1,169 @@
-# app.py - אפליקציית תמלול עם ממשק ויזואלי
 import whisper
 import gradio as gr
 import os
 from datetime import datetime
+import json
 
-# בחר גודל מודל לפי המשאבים
-# tiny = 1GB, base = 1.5GB, small = 2.5GB
+# הגדרות
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
-print(f"טוען מודל Whisper {MODEL_SIZE}...")
-model = whisper.load_model(MODEL_SIZE)
-print("המודל נטען בהצלחה!")
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def transcribe_audio(audio_file, task_type):
-    """תמלל קובץ אודיו"""
-    if audio_file is None:
-        return "❌ אנא העלה קובץ אודיו", ""
+# טען מודל
+print(f"🔄 טוען מודל Whisper {MODEL_SIZE}...")
+model = whisper.load_model(MODEL_SIZE)
+print("✅ המודל מוכן!")
+
+def transcribe_audio(audio_file, options):
+    """תמלל קובץ אודיו עם אפשרויות מתקדמות"""
+    if not audio_file:
+        return "❌ אנא העלה קובץ", "", ""
     
     try:
-        print(f"מתחיל תמלול של: {audio_file}")
+        # הגדרות תמלול
+        task = "translate" if "תרגום לאנגלית" in options else "transcribe"
         
         # תמלל
+        print(f"🎙️ מתמלל: {os.path.basename(audio_file)}")
         result = model.transcribe(
-            audio_file, 
-            language="he" if task_type == "תמלול בעברית" else None,
-            task="transcribe" if task_type != "תרגום לאנגלית" else "translate"
+            audio_file,
+            language="he" if "עברית" in options else None,
+            task=task,
+            verbose=True
         )
         
-        # טקסט מלא
-        full_text = result["text"].strip()
-        
-        # צור כתוביות SRT
-        srt_content = ""
-        for i, segment in enumerate(result["segments"], 1):
-            start_time = format_time_srt(segment["start"])
-            end_time = format_time_srt(segment["end"])
-            srt_content += f"{i}\n{start_time} --> {end_time}\n{segment['text'].strip()}\n\n"
-        
-        # שמור לקבצים
+        # שמור קבצים
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = os.path.splitext(os.path.basename(audio_file))[0]
         
-        # שמור טקסט
-        txt_filename = f"transcription_{timestamp}.txt"
-        with open(txt_filename, "w", encoding="utf-8") as f:
-            f.write(full_text)
+        # טקסט
+        txt_path = f"{OUTPUT_DIR}/{base_name}_{timestamp}.txt"
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(result["text"])
         
-        # שמור SRT
-        srt_filename = f"subtitles_{timestamp}.srt"
-        with open(srt_filename, "w", encoding="utf-8") as f:
-            f.write(srt_content)
+        # SRT
+        srt_path = f"{OUTPUT_DIR}/{base_name}_{timestamp}.srt"
+        create_srt(result["segments"], srt_path)
         
-        download_links = f"\n\n📥 קבצים להורדה:\n"
-        download_links += f"- [הורד טקסט](./{txt_filename})\n"
-        download_links += f"- [הורד כתוביות SRT](./{srt_filename})"
+        # JSON
+        json_path = f"{OUTPUT_DIR}/{base_name}_{timestamp}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
         
-        return full_text + download_links, srt_content
+        return (
+            result["text"],
+            f"✅ הקבצים נשמרו ב-{OUTPUT_DIR}/",
+            create_preview(result["segments"])
+        )
         
     except Exception as e:
-        return f"❌ שגיאה: {str(e)}", ""
+        return f"❌ שגיאה: {str(e)}", "", ""
 
-def format_time_srt(seconds):
+def create_srt(segments, output_path):
+    """צור קובץ כתוביות SRT"""
+    with open(output_path, "w", encoding="utf-8") as f:
+        for i, seg in enumerate(segments, 1):
+            start = format_timestamp(seg["start"])
+            end = format_timestamp(seg["end"])
+            f.write(f"{i}\n{start} --> {end}\n{seg['text'].strip()}\n\n")
+
+def format_timestamp(seconds):
     """המר שניות לפורמט SRT"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".replace(".", ",")
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
 
-# צור ממשק Gradio
+def create_preview(segments):
+    """צור תצוגה מקדימה של הפלחים"""
+    preview = "🎬 תצוגה מקדימה (5 פלחים ראשונים):\n\n"
+    for i, seg in enumerate(segments[:5], 1):
+        time = f"{seg['start']:.1f}s"
+        preview += f"[{time}] {seg['text']}\n"
+    if len(segments) > 5:
+        preview += f"\n... ועוד {len(segments)-5} פלחים"
+    return preview
+
+# ממשק Gradio
 with gr.Blocks(title="תמלול Whisper", theme=gr.themes.Soft()) as app:
     gr.Markdown("""
-    # 🎙️ תמלול עם Whisper ב-GitHub Codespaces
+    # 🎙️ תמלול עברית עם Whisper
     
-    ### 📌 הוראות:
-    1. העלה קובץ אודיו או וידאו (עד 25MB)
-    2. בחר שפה/משימה
-    3. לחץ על "תמלל" והמתן
+    ### 📌 מדריך מהיר:
+    1. העלה קובץ אודיו/וידאו
+    2. בחר אפשרויות
+    3. לחץ תמלל!
     
-    💡 **טיפ:** תמלול של 10 דקות לוקח בערך 2-3 דקות
+    💾 כל הקבצים נשמרים אוטומטית בתיקיית `output/`
     """)
     
     with gr.Row():
-        with gr.Column():
+        with gr.Column(scale=1):
             audio_input = gr.Audio(
-                source="upload", 
+                sources=["upload"],
                 type="filepath",
-                label="📁 העלה קובץ אודיו/וידאו"
+                label="📁 קובץ אודיו/וידאו"
             )
-            task_type = gr.Radio(
-                choices=["תמלול בעברית", "תמלול אוטומטי (כל שפה)", "תרגום לאנגלית"],
-                value="תמלול בעברית",
-                label="🌐 בחר משימה"
+            
+            options = gr.CheckboxGroup(
+                choices=[
+                    "עברית",
+                    "תרגום לאנגלית",
+                    "הוסף חותמות זמן"
+                ],
+                value=["עברית"],
+                label="⚙️ אפשרויות"
             )
-            transcribe_btn = gr.Button("🚀 תמלל", variant="primary", size="lg")
+            
+            transcribe_btn = gr.Button(
+                "🚀 התחל תמלול",
+                variant="primary",
+                size="lg"
+            )
         
-        with gr.Column():
+        with gr.Column(scale=2):
             output_text = gr.Textbox(
-                label="📝 תוצאת התמלול",
+                label="📝 תמלול",
                 lines=10,
-                rtl=True,
-                interactive=True
+                max_lines=20,
+                rtl=True
             )
-            output_srt = gr.Textbox(
-                label="🎬 כתוביות SRT",
-                lines=5,
-                visible=False
+            
+            status = gr.Textbox(
+                label="📊 סטטוס",
+                lines=1
+            )
+            
+            preview = gr.Textbox(
+                label="👁️ תצוגה מקדימה",
+                lines=5
             )
     
-    # חיבור הפונקציה
+    # אירועים
     transcribe_btn.click(
         fn=transcribe_audio,
-        inputs=[audio_input, task_type],
-        outputs=[output_text, output_srt]
+        inputs=[audio_input, options],
+        outputs=[output_text, status, preview]
     )
     
+    # הוראות נוספות
     gr.Markdown("""
     ---
-    ### 🛠️ מידע טכני:
-    - **מודל:** Whisper {model_size}
-    - **סביבה:** GitHub Codespaces
-    - **זיכרון פנוי:** {memory_info}
-    """.format(
-        model_size=MODEL_SIZE,
-        memory_info="בדיקה..."
-    ))
+    ### 💡 טיפים:
+    - **מודל נוכחי:** {model}
+    - **גודל מקסימלי:** 25MB ב-Codespaces
+    - **פורמטים נתמכים:** MP3, WAV, MP4, M4A ועוד
+    
+    ### 📁 קבצי פלט:
+    - `.txt` - טקסט נקי
+    - `.srt` - כתוביות לוידאו  
+    - `.json` - מידע מלא כולל זמנים
+    """.format(model=MODEL_SIZE))
 
 if __name__ == "__main__":
-    # הגדרות להרצה ב-Codespaces
     port = int(os.environ.get("PORT", 7860))
-    
-    print(f"🚀 מפעיל את האפליקציה על פורט {port}")
-    print("📌 הממשק ייפתח אוטומטית בדפדפן")
-    
     app.launch(
         server_name="0.0.0.0",
         server_port=port,
-        share=True,  # יוצר לינק ציבורי
-        show_error=True
+        share=True
     )
